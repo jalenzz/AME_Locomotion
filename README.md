@@ -71,6 +71,11 @@ bash run_train.sh
 bash run_play.sh
 ```
 
+### 两阶段训练说明
+
+请注意 AME 采用两阶段训练流程:
+第一阶段完成后，将 [velocity_env_cfg_29dof.py](source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/velocity_env_cfg_29dof.py) 中的 `FINETUNE` 设为 `True`，再启动第二阶段训练。
+
 ### 复现说明与实现调整
 
 整体上我们遵循论文设计，同时尝试了三点小调整。
@@ -170,6 +175,14 @@ Play / evaluate:
 ```bash
 bash run_play.sh
 ```
+
+### Two-Stage Training Note
+
+Please note that AME uses a two-stage training pipeline:
+
+1. Finish stage-1 training first.
+2. After stage-1 is done, set `FINETUNE = True` in [velocity_env_cfg_29dof.py](source/ame_locomotion/ame_locomotion/tasks/manager_based/ame_locomotion/29dof/velocity_env_cfg_29dof.py).
+3. Then start stage-2 training.
 
 ### Reproduction Notes and Small Deviations
 
