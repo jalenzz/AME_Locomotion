@@ -1,8 +1,9 @@
 #!/bin/bash
 python scripts/rsl_rl/train.py \
---task AME-G1-29DOF-v0 \
+--task AME-Go2-v0 \
 --max_iterations 15000 \
 --headless \
+--num_envs 1800
 # --run_name  \
 # --resume \
 # --load_run  \
