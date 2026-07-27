@@ -32,8 +32,10 @@ FINETUNE = False
 ##
 # Pre-defined configs
 ##
-from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.terrain_cfg import ROUGH_TERRAINS_CFG  # isort: skip
-from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.finetune_terrain_cfg import FINETUNE_ROUGH_TERRAINS_CFG
+from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.terrain_cfg import GO2_ROUGH_TERRAINS_CFG
+from ame_locomotion.tasks.manager_based.ame_locomotion.terrains.finetune_terrain_cfg import (
+    GO2_FINETUNE_ROUGH_TERRAINS_CFG,
+)
 from ame_locomotion.tasks.manager_based.ame_locomotion.assets.robots.unitree import UNITREE_GO2_CFG as ROBOT_CFG
 ##
 # Scene definition
@@ -48,8 +50,8 @@ class MySceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=FINETUNE_ROUGH_TERRAINS_CFG if FINETUNE else ROUGH_TERRAINS_CFG,
-        max_init_terrain_level=5,
+        terrain_generator=GO2_FINETUNE_ROUGH_TERRAINS_CFG if FINETUNE else GO2_ROUGH_TERRAINS_CFG,
+        max_init_terrain_level=2,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
