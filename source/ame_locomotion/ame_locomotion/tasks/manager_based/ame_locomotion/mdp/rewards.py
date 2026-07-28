@@ -90,6 +90,99 @@ def feet_stumble(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Te
     return reward
 
 
+def joint_torque_limits(
+    env: ManagerBasedRLEnv,
+    soft_ratio: float = 0.8,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize joint torques above a fraction of the actuator effort limits.
+
+    This is the implementation of the paper's
+    ``max(|tau_j| - 0.8 * tau_lim,j, 0)`` term.  Isaac Lab's
+    ``applied_torque_limits`` term measures the difference between applied and
+    computed torques, which is a different quantity.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_ids = asset_cfg.joint_ids
+    excess = torch.abs(asset.data.applied_torque[:, joint_ids]) - soft_ratio * asset.data.joint_effort_limits[
+        :, joint_ids
+    ]
+    return torch.sum(torch.clamp(excess, min=0.0), dim=1)
+
+
+def joint_velocity_limits(
+    env: ManagerBasedRLEnv,
+    soft_ratio: float = 0.9,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize ``max(|qdot| - 0.9*qdot_lim, 0)`` without extra clipping."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_ids = asset_cfg.joint_ids
+    excess = torch.abs(asset.data.joint_vel[:, joint_ids]) - soft_ratio * asset.data.soft_joint_vel_limits[
+        :, joint_ids
+    ]
+    return torch.sum(torch.clamp(excess, min=0.0), dim=1)
+
+
+def contact_forces_penalty(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    sensor_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize foot forces above the paper's 700 N threshold."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = torch.linalg.norm(contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids], dim=-1)
+    return torch.sum(torch.clamp(forces - threshold, min=0.0), dim=1)
+
+
+def foot_slippage_penalty(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    contact_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Implement ``c_f * ||v_f||`` for all four feet."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contacts = torch.linalg.norm(contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids], dim=-1) > contact_threshold
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_vel = torch.linalg.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :], dim=-1)
+    return torch.sum(foot_vel * contacts, dim=1)
+
+
+def standing_joint_position_penalty(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    contact_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize desired-vs-measured joint position error during stance."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    in_stance = torch.any(
+        torch.linalg.norm(contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids], dim=-1) > contact_threshold,
+        dim=1,
+    )
+    asset: Articulation = env.scene[asset_cfg.name]
+    error = torch.linalg.norm(asset.data.joint_pos_target - asset.data.joint_pos, dim=1)
+    return error * in_stance
+
+
+def standing_joint_velocity_penalty(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    contact_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize desired-vs-measured joint velocity error during stance."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    in_stance = torch.any(
+        torch.linalg.norm(contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids], dim=-1) > contact_threshold,
+        dim=1,
+    )
+    asset: Articulation = env.scene[asset_cfg.name]
+    error = torch.linalg.norm(asset.data.joint_vel_target - asset.data.joint_vel, dim=1)
+    return error * in_stance
+
+
 def feet_height_body(
     env: ManagerBasedRLEnv,
     command_name: str,

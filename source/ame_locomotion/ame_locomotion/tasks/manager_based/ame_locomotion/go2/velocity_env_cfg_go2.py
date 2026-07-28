@@ -253,87 +253,88 @@ class EventCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
-    # -- task
+    # -- task (ANYmal-D, Table 2)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
-        params={"command_name": "base_velocity", "std": 0.25},
+        func=mdp.track_lin_vel_xy_exp,
+        weight=5.0,
+        params={"command_name": "base_velocity", "std": 1.0},
     )
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, 
-        weight=2.0,
-        params={"command_name": "base_velocity", "std": 0.25}
+        func=mdp.track_ang_vel_z_exp,
+        weight=3.0,
+        params={"command_name": "base_velocity", "std": 1.0},
     )
-
-    # -- penalties
-    ang_vel_xy_l2 = RewTerm(
-        func=mdp.ang_vel_xy_l2, 
-        weight=-0.05
-    )
-    undesired_contacts = RewTerm(
+    collision_penalty = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1.0,
         params={
-            "threshold": 1,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_thigh", ".*_calf"]),
+            "threshold": 1.0,
+            # ANYmal-D's shank corresponds to the Go2 calf links.
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf"),
         },
     )
-    dof_torques_l2 = RewTerm(
-        func=mdp.joint_torques_l2, 
-        weight=-1.5e-7,
-    )
-    dof_acc_l2 = RewTerm(
+
+    # -- regulation (ANYmal-D, Table 2)
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-5.0e-3)
+    joint_acceleration = RewTerm(
         func=mdp.joint_acc_l2,
-        weight=-1.25e-7,
+        weight=-2.5e-7,
     )
-    dof_vel_l2 = RewTerm(
-        func=mdp.joint_vel_l2, 
-        weight=-0.001
+    joint_torques = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-2.0e-5,
     )
-    dof_pos_limits = RewTerm(
+    joint_position_limits = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-1.0,
     )
-    dof_torques_limits = RewTerm(
-        func=mdp.applied_torque_limits,
-        weight=-0.01,
+    joint_velocity_limits = RewTerm(
+        func=mdp.joint_velocity_limits,
+        weight=-1.0,
+        params={"soft_ratio": 0.9},
     )
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
+    joint_torque_limits = RewTerm(
+        func=mdp.joint_torque_limits,
+        weight=-0.2,
+        params={"soft_ratio": 0.8},
+    )
 
-    # -- style
-    feet_air_time = RewTerm(
-        func=mdp.feet_air_time,
-        weight=0.25,
+    # -- style (ANYmal-D, Table 2)
+    linear_velocity = RewTerm(
+        func=mdp.lin_vel_z_l2,
+        weight=-1.0,
+    )
+    angular_velocity = RewTerm(
+        func=mdp.ang_vel_xy_l2,
+        weight=-5.0e-2,
+    )
+    contact_forces = RewTerm(
+        func=mdp.contact_forces_penalty,
+        weight=-2.5e-5,
         params={
-            "command_name": "base_velocity",
+            "threshold": 700.0,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
-            "threshold": 0.6,
         },
     )
-    feet_air_time_variance = RewTerm(
-        func=mdp.air_time_variance_penalty,
-        weight=-0.1,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
-        },
-    )
-    feet_slide = RewTerm(
-        func=mdp.feet_slide,
-        weight=-0.1,
+    foot_slippage = RewTerm(
+        func=mdp.foot_slippage_penalty,
+        weight=-0.5,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
         },
     )
-    feet_stumble = RewTerm(
-        func=mdp.feet_stumble,
-        weight=-1.0,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
-        },
-    )
+
+    # Stage-2-only orange terms in the paper's Table 2.
+    standing_joint_positions = None
+    standing_joint_velocity = None
+
+    # Deliberately no air-time, stumble, flat-orientation, or joint-deviation
+    # terms: these are not ANYmal-D rewards in the original table.
+
+    # Compatibility aliases are intentionally not kept: using the paper names
+    # makes accidental reintroduction of the old Go2 reward set less likely.
 
 
 @configclass
@@ -352,6 +353,10 @@ class TerminationsCfg:
                 # body_names=["base"]
             ), "threshold": 1.0},
     )
+    # ANYmal-D terminates on torso terrain collision OR bad torso orientation.
+    # The paper gives no quantitative threshold; 1.0 rad (~57 deg) leaves margin
+    # for steep climbing while still catching roll-overs. Tune as needed.
+    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 1.0})
 
 @configclass
 class CurriculumCfg:
@@ -433,23 +438,17 @@ class Go2RoughEnvCfg(ManagerBasedRLEnvCfg):
                 }
             }
             self.commands.base_velocity.ranges.heading = (0.0, 0.0)
-            
-            self.rewards.termination_penalty.weight = -200.0
-            self.rewards.track_lin_vel_xy_exp.weight = 2.0
-            self.rewards.track_ang_vel_z_exp.weight = 3.0
-            self.rewards.ang_vel_xy_l2.weight = -0.05
-            self.rewards.undesired_contacts.weight = -1.0
-            self.rewards.dof_torques_l2.weight = -1.5e-7
-            self.rewards.dof_acc_l2.weight = -1.25e-7
-            self.rewards.dof_vel_l2.weight = -0.001
-            self.rewards.dof_pos_limits.weight = -1.0
-            self.rewards.dof_torques_limits.weight = -0.05
-            self.rewards.action_rate_l2.weight = -0.05
-            self.rewards.flat_orientation_l2.weight = -5.0
-            self.rewards.feet_air_time.weight = 0.5
-            self.rewards.feet_air_time_variance.weight = -2.0
-            self.rewards.feet_slide.weight = -0.3
-            self.rewards.feet_stumble.weight = -5.0
+            # Table 2 orange terms: activated only during stage-2 fine-tuning.
+            self.rewards.standing_joint_positions = RewTerm(
+                func=mdp.standing_joint_position_penalty,
+                weight=-0.1,
+                params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")},
+            )
+            self.rewards.standing_joint_velocity = RewTerm(
+                func=mdp.standing_joint_velocity_penalty,
+                weight=-0.5,
+                params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")},
+            )
         else:
             # Randomization
             self.events.push_robot = None
@@ -463,23 +462,9 @@ class Go2RoughEnvCfg(ManagerBasedRLEnvCfg):
             self.observations.policy.joint_vel.noise=None
             self.observations.policy.actions.noise=None
             self.observations.policy.height_scan.params["noise"]=False
-            # Reward Weights
-            self.rewards.termination_penalty.weight = -200
-            self.rewards.track_lin_vel_xy_exp.weight = 2.0
-            self.rewards.track_ang_vel_z_exp.weight = 3.0
-            self.rewards.ang_vel_xy_l2.weight = -0.05
-            self.rewards.undesired_contacts.weight = -1.0
-            self.rewards.dof_torques_l2.weight = -1.5e-7
-            self.rewards.dof_acc_l2.weight = -1.25e-7
-            self.rewards.dof_vel_l2.weight = -0.001
-            self.rewards.dof_pos_limits.weight = -1.0
-            self.rewards.dof_torques_limits.weight = -0.01
-            self.rewards.action_rate_l2.weight = -0.01
-            self.rewards.flat_orientation_l2.weight = -2.0
-            self.rewards.feet_air_time.weight = 0.25
-            self.rewards.feet_air_time_variance.weight = -0.7
-            self.rewards.feet_slide.weight = -0.1
-            self.rewards.feet_stumble.weight = -2.0
+            # Stage-2-only terms remain disabled during the 14-term baseline.
+            self.rewards.standing_joint_positions = None
+            self.rewards.standing_joint_velocity = None
         
 
 @configclass
