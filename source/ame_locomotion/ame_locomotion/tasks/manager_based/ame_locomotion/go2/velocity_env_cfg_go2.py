@@ -285,7 +285,16 @@ class RewardsCfg:
     )
     joint_torques = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-2.0e-5,
+        weight=-2.0e-4,
+    )
+    joint_position = RewTerm(
+        func=mdp.joint_position_penalty,
+        weight=-0.2,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "stand_still_scale": 5.0,
+            "velocity_threshold": 0.3,
+        },
     )
     joint_position_limits = RewTerm(
         func=mdp.joint_pos_limits,
@@ -313,7 +322,7 @@ class RewardsCfg:
     )
     contact_forces = RewTerm(
         func=mdp.contact_forces_penalty,
-        weight=-2.5e-5,
+        weight=-1.75e-4,
         params={
             "threshold": 100.0,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
@@ -327,13 +336,17 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
         },
     )
+    air_time_variance = RewTerm(
+        func=mdp.air_time_variance_penalty,
+        weight=-1.0,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")},
+    )
 
     # Stage-2-only orange terms in the paper's Table 2.
     standing_joint_positions = None
     standing_joint_velocity = None
 
-    # Deliberately no air-time, stumble, flat-orientation, or joint-deviation
-    # terms: these are not ANYmal-D rewards in the original table.
+    # Deliberately no stumble or flat-orientation terms.
 
     # Compatibility aliases are intentionally not kept: using the paper names
     # makes accidental reintroduction of the old Go2 reward set less likely.

@@ -129,7 +129,7 @@ def contact_forces_penalty(
     threshold: float,
     sensor_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
-    """Penalize foot forces above the paper's 700 N threshold."""
+    """Penalize foot forces above the configured threshold."""
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     forces = torch.linalg.norm(contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids], dim=-1)
     return torch.sum(torch.clamp(forces - threshold, min=0.0), dim=1)

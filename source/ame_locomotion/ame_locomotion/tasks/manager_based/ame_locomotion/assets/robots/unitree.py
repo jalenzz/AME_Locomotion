@@ -61,6 +61,8 @@ UNITREE_GO2_CFG = UnitreeArticulationCfg(
     actuators={
         "GO2HV": unitree_actuators.UnitreeActuatorCfg_Go2HV(
             joint_names_expr=[".*"],
+            effort_limit=23.4,
+            effort_limit_sim=23.4,
             stiffness=25.0,
             damping=0.5,
             friction=0.01,
