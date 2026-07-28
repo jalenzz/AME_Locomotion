@@ -23,8 +23,7 @@ class ActorCriticEncoder(nn.Module):
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
         # Terrain encoder parameters
-        map_scan_dim=(33, 21, 3),  # L=33, W=21, 3D coordinates
-        # map_scan_dim=(17, 11, 3),  # L=17, W=11, 3D coordinates
+        map_scan_dim=(33, 21, 3),
         mha_dim=64,  # MHA feature dimension
         num_heads=16,  # Number of attention heads
         cnn_downsample=True,
@@ -167,10 +166,7 @@ class ActorCriticEncoder(nn.Module):
 
         height_map = height_map.permute(0, 3, 1, 2)
         cnn_features = self.map_cnn(height_map)
-        if not self.cnn_downsample:
-            cnn_features = cnn_features.permute(0, 2, 3, 1).reshape(-1, self.L * self.W, self.cnn_output_dim)
-        else:
-            cnn_features = cnn_features.permute(0, 2, 3, 1).reshape(-1, (self.L // 2 + 1) * (self.W // 2 + 1), self.cnn_output_dim)
+        cnn_features = cnn_features.permute(0, 2, 3, 1).flatten(1, 2)
 
         # # Optional branch: concatenate sampled 3D coordinates with CNN features
         # if not self.cnn_downsample:

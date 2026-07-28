@@ -73,8 +73,7 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/base",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
         ray_alignment="yaw",
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[1.6, 1.0]),  # 0.05m resolution, 1.6m x 1.0m, grid 33x21
-        # pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),   # 0.1m resolution, 1.6m x 1.0m, grid 17x11
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[2.5, 1.5]),  # 0.1 m resolution, 26 x 16
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
@@ -102,9 +101,9 @@ class CommandsCfg:
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
-        rel_standing_envs=0.0,
-        rel_heading_envs=1.0,
-        heading_command=True,
+        rel_standing_envs=0.05,
+        rel_heading_envs=0.0,
+        heading_command=False,
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
@@ -265,13 +264,16 @@ class RewardsCfg:
         weight=3.0,
         params={"command_name": "base_velocity", "std": 1.0},
     )
-    collision_penalty = RewTerm(
+    # unitree_rl_lab Go2: penalize head / leg links touching terrain (not terminate).
+    undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1.0,
         params={
             "threshold": 1.0,
-            # ANYmal-D's shank corresponds to the Go2 calf links.
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf"),
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["Head_.*", ".*_hip", ".*_thigh", ".*_calf"],
+            ),
         },
     )
 
@@ -313,7 +315,7 @@ class RewardsCfg:
         func=mdp.contact_forces_penalty,
         weight=-2.5e-5,
         params={
-            "threshold": 700.0,
+            "threshold": 100.0,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
         },
     )
@@ -345,18 +347,11 @@ class TerminationsCfg:
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces", 
-                body_names=[
-                    "base",
-                ]
-                # body_names=["base"]
-            ), "threshold": 1.0},
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"),
+            "threshold": 1.0,
+        },
     )
-    # ANYmal-D terminates on torso terrain collision OR bad torso orientation.
-    # The paper gives no quantitative threshold; 1.0 rad (~57 deg) leaves margin
-    # for steep climbing while still catching roll-overs. Tune as needed.
-    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 1.0})
+    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
 
 @configclass
 class CurriculumCfg:

@@ -7,13 +7,19 @@ from isaaclab.utils import configclass
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
 
+
+@configclass
+class AMEActorCriticCfg(RslRlPpoActorCriticCfg):
+    map_scan_dim: tuple[int, int, int] = (33, 21, 3)
+
+
 @configclass
 class G1AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 10000
     save_interval = 100
     experiment_name = "g1_ame"
-    policy = RslRlPpoActorCriticCfg(
+    policy = AMEActorCriticCfg(
         class_name="ActorCriticEncoder",
         init_noise_std=1.0,
         actor_obs_normalization=False,
@@ -46,8 +52,9 @@ class Go2AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 10000
     save_interval = 100
     experiment_name = "go2_ame"
-    policy = RslRlPpoActorCriticCfg(
+    policy = AMEActorCriticCfg(
         class_name="ActorCriticEncoder",
+        map_scan_dim=(26, 16, 3),
         init_noise_std=1.0,
         actor_obs_normalization=False,
         critic_obs_normalization=False,
