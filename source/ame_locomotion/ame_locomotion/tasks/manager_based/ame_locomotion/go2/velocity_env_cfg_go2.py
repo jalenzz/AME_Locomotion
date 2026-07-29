@@ -289,7 +289,7 @@ class RewardsCfg:
     )
     joint_position = RewTerm(
         func=mdp.joint_position_penalty,
-        weight=-0.2,
+        weight=-0.7,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
             "stand_still_scale": 5.0,
@@ -320,6 +320,10 @@ class RewardsCfg:
         func=mdp.ang_vel_xy_l2,
         weight=-5.0e-2,
     )
+    flat_orientation = RewTerm(
+        func=mdp.flat_orientation_l2,
+        weight=-2.5,
+    )
     contact_forces = RewTerm(
         func=mdp.contact_forces_penalty,
         weight=-1.75e-4,
@@ -346,7 +350,7 @@ class RewardsCfg:
     standing_joint_positions = None
     standing_joint_velocity = None
 
-    # Deliberately no stumble or flat-orientation terms.
+    # Deliberately no stumble term.
 
     # Compatibility aliases are intentionally not kept: using the paper names
     # makes accidental reintroduction of the old Go2 reward set less likely.
