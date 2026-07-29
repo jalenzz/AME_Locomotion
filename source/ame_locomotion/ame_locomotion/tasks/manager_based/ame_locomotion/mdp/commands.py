@@ -5,9 +5,42 @@ from dataclasses import MISSING
 import torch
 
 from isaaclab.envs import ManagerBasedEnv
-from isaaclab.envs.mdp import TerrainBasedPose2dCommandCfg, TerrainBasedPose2dCommand
+from isaaclab.envs.mdp import (
+    TerrainBasedPose2dCommand,
+    TerrainBasedPose2dCommandCfg,
+    UniformVelocityCommand,
+    UniformVelocityCommandCfg,
+)
 
 from isaaclab.utils import configclass
+
+
+class PathProgressVelocityCommand(UniformVelocityCommand):
+    """Uniform velocity command that tracks progress along the commanded path."""
+
+    def __init__(self, cfg: PathProgressVelocityCommandCfg, env: ManagerBasedEnv):
+        super().__init__(cfg, env)
+        self.path_progress = torch.zeros(self.num_envs, device=self.device)
+        self.commanded_path_length = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["path_progress"] = self.path_progress
+        self.metrics["commanded_path_length"] = self.commanded_path_length
+
+    def _update_metrics(self):
+        super()._update_metrics()
+        linear_command = self.vel_command_b[:, :2]
+        command_speed = torch.linalg.vector_norm(linear_command, dim=-1)
+        progress_speed = torch.sum(self.robot.data.root_lin_vel_b[:, :2] * linear_command, dim=-1)
+        progress_speed /= command_speed.clamp_min(1.0e-6)
+        progress_speed = torch.where(command_speed > 1.0e-6, progress_speed, 0.0)
+        self.path_progress += progress_speed * self._env.step_dt
+        self.commanded_path_length += command_speed * self._env.step_dt
+
+
+@configclass
+class PathProgressVelocityCommandCfg(UniformVelocityCommandCfg):
+    """Configuration for velocity commands with path-progress tracking."""
+
+    class_type: type = PathProgressVelocityCommand
 
 
 class TimeLimitedTerrainBasedPose2dCommand(TerrainBasedPose2dCommand):
