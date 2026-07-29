@@ -72,3 +72,6 @@ tests/
 
 attn_vis/
 attention_weights.npy
+
+arXiv-2506.09588v1/
+diagnostics/
