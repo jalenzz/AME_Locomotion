@@ -123,6 +123,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[INFO] joints ({len(joint_names)}): {joint_names}")
     print(f"[INFO] contact bodies ({len(body_names)}): {body_names}")
 
+    terrain_generator_cfg = env_cfg.scene.terrain.terrain_generator
+    terrain_type_names = []
+    if terrain_generator_cfg is not None:
+        subterrain_names = list(terrain_generator_cfg.sub_terrains.keys())
+        proportions = [float(cfg.proportion) for cfg in terrain_generator_cfg.sub_terrains.values()]
+        proportion_sum = sum(proportions)
+        cumulative = []
+        running = 0.0
+        for proportion in proportions:
+            running += proportion / proportion_sum
+            cumulative.append(running)
+        for column in range(int(terrain_generator_cfg.num_cols)):
+            ratio = column / terrain_generator_cfg.num_cols + 0.001
+            subterrain_index = next(i for i, limit in enumerate(cumulative) if ratio < limit)
+            terrain_type_names.append(subterrain_names[subterrain_index])
+        print(f"[INFO] terrain type columns: {dict(enumerate(terrain_type_names))}")
+
     os.makedirs(args_cli.output_dir, exist_ok=True)
     timeseries_path = os.path.join(args_cli.output_dir, "env0_timeseries.csv")
     summary_path = os.path.join(args_cli.output_dir, "summary.csv")
@@ -147,6 +164,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "torque": [],
         "contact_force": [],
         "foot_pos_b": [],
+        "foot_contacts": [],
+        "touchdowns": [],
+        "terrain_levels": [],
+        "terrain_types": [],
         "dones": [],
     }
     reward_term_samples = {name: [] for name in env.unwrapped.reward_manager.active_terms}
@@ -203,6 +224,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     "torque": robot.data.applied_torque,
                     "contact_force": forces,
                     "foot_pos_b": foot_pos_b,
+                    "foot_contacts": foot_contacts,
+                    "touchdowns": touchdowns,
+                    "terrain_levels": env.unwrapped.scene.terrain.terrain_levels,
+                    "terrain_types": env.unwrapped.scene.terrain.terrain_types,
                     "dones": dones,
                 }
                 for name, value in values.items():
@@ -220,7 +245,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     )
 
             previous_foot_contacts.copy_(foot_contacts)
-            previous_foot_contacts[dones] = False
+            previous_foot_contacts[dones.bool()] = False
 
             if step % args_cli.sample_stride == 0:
                 row = [
@@ -275,6 +300,64 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         writer.writeheader()
         for metric, values in summary_metrics.items():
             writer.writerow({"metric": metric, **_stats(values)})
+
+    # Per-environment metrics expose terrain-conditioned failures hidden by aggregate means.
+    # In particular, a policy may preserve a good mean velocity while stopping on only the
+    # harder terrain instances, or achieve similar touchdown counts with a hopping gait.
+    foot_contacts = stacked["foot_contacts"].bool()  # [time, env, foot]
+    touchdowns = stacked["touchdowns"].bool()
+    velocity_x = stacked["lin_vel"][..., 0]
+    terrain_levels = stacked["terrain_levels"].float()
+    terrain_types = stacked["terrain_types"][0].long()
+    command_x = float(args_cli.command_x)
+    per_env_path = os.path.join(args_cli.output_dir, "env_metrics.csv")
+    with open(per_env_path, "w", newline="", encoding="utf-8") as stream:
+        fieldnames = [
+            "env_id", "terrain_type_id", "terrain_type_name", "terrain_level_mean", "terrain_level_final",
+            "mean_vx_mps", "p05_vx_mps", "mean_abs_vx_error_mps", "fraction_vx_below_25pct_cmd",
+            "mean_reward", "base_vz_std_mps", "base_vz_p95_abs_mps", "base_height_std_m",
+            "mean_contact_count", "all_feet_air_fraction", "all_feet_contact_fraction",
+            "simultaneous_touchdown_ge2_fraction", "simultaneous_touchdown_ge3_fraction",
+            "FL_contact_fraction", "FR_contact_fraction", "RL_contact_fraction", "RR_contact_fraction",
+        ]
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        for env_id in range(velocity_x.shape[1]):
+            vx = velocity_x[:, env_id]
+            vz = stacked["lin_vel"][:, env_id, 2]
+            base_height = stacked["base_height"][:, env_id]
+            contacts = foot_contacts[:, env_id]
+            td = touchdowns[:, env_id]
+            td_count = td.sum(dim=1).float()
+            row = {
+                "env_id": env_id,
+                "terrain_type_id": int(terrain_types[env_id].item()),
+                "terrain_type_name": terrain_type_names[int(terrain_types[env_id].item())]
+                if terrain_type_names else "unknown",
+                "terrain_level_mean": float(terrain_levels[:, env_id].mean().item()),
+                "terrain_level_final": float(terrain_levels[-1, env_id].item()),
+                "mean_vx_mps": float(vx.mean().item()),
+                "p05_vx_mps": _percentile(vx, 0.05),
+                "mean_abs_vx_error_mps": float((vx - command_x).abs().mean().item()),
+                "fraction_vx_below_25pct_cmd": float((vx < 0.25 * command_x).float().mean().item())
+                if command_x > 0.0 else 0.0,
+                "mean_reward": float(stacked["rewards"][:, env_id].mean().item()),
+                "base_vz_std_mps": float(vz.std(unbiased=False).item()),
+                "base_vz_p95_abs_mps": _percentile(vz.abs(), 0.95),
+                "base_height_std_m": float(base_height.std(unbiased=False).item()),
+                "mean_contact_count": float(contacts.float().sum(dim=1).mean().item()),
+                "all_feet_air_fraction": float((contacts.sum(dim=1) == 0).float().mean().item()),
+                "all_feet_contact_fraction": float((contacts.sum(dim=1) == len(foot_ids)).float().mean().item()),
+                "simultaneous_touchdown_ge2_fraction": float((td_count >= 2).float().mean().item()),
+                "simultaneous_touchdown_ge3_fraction": float((td_count >= 3).float().mean().item()),
+            }
+            for foot_index, foot_name in enumerate(sensor_foot_names):
+                row[f"{foot_name.replace('_foot', '')}_contact_fraction"] = float(
+                    contacts[:, foot_index].float().mean().item()
+                )
+            writer.writerow(row)
+
+    print(f"[RESULT] wrote per-environment metrics to {per_env_path}")
 
     with open(rewards_path, "w", newline="", encoding="utf-8") as stream:
         fieldnames = ["term", "mean_per_step", "std", "p05", "p50", "p95", "min", "max"]

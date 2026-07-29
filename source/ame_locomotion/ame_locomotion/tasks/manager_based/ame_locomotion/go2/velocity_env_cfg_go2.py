@@ -257,7 +257,10 @@ class RewardsCfg:
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_exp,
         weight=5.0,
-        params={"command_name": "base_velocity", "std": 1.0},
+        # A std of 1.0 still gives a stopped robot a large reward for a
+        # 0.6--0.8 m/s command.  Tighten the kernel so that crossing a
+        # difficult terrain is preferable to waiting on its edge.
+        params={"command_name": "base_velocity", "std": 0.5},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp,
@@ -278,10 +281,12 @@ class RewardsCfg:
     )
 
     # -- regulation (ANYmal-D, Table 2)
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-5.0e-3)
+    # The previous weights were too weak relative to velocity tracking and
+    # allowed a high-amplitude, two-leg bounce on boxes/steps.
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1.0e-2)
     joint_acceleration = RewTerm(
         func=mdp.joint_acc_l2,
-        weight=-2.5e-7,
+        weight=-5.0e-7,
     )
     joint_torques = RewTerm(
         func=mdp.joint_torques_l2,
@@ -314,7 +319,7 @@ class RewardsCfg:
     # -- style (ANYmal-D, Table 2)
     linear_velocity = RewTerm(
         func=mdp.lin_vel_z_l2,
-        weight=-1.0,
+        weight=-2.0,
     )
     angular_velocity = RewTerm(
         func=mdp.ang_vel_xy_l2,

@@ -86,6 +86,10 @@ uv run --python .venv/bin/python \
   - 比较四足 touchdown 次数。
   - 比较前后足 x 对称性及左右足 `abs(y)` 对称性。
   - `abs(y)` 过小表示脚靠近身体中心线。
+- `env_metrics.csv`
+  - 按环境比较 `mean_vx_mps`、`fraction_vx_below_25pct_cmd` 与 `terrain_level_mean/final`，识别只在困难地形停住而被均值掩盖的情况。
+  - `all_feet_air_fraction`、`simultaneous_touchdown_ge2/3_fraction` 和 `mean_contact_count` 用于区分正常交替步态与四足同步跳跃；同时看 `base_vz_std_mps`、`base_height_std_m` 识别非同步的竖直弹跳。
+  - `terrain_type_name` 按 terrain generator 的列映射输出，不能只凭 terrain type id 猜测地形类别。
 - `joints.csv`
   - 对照默认姿态检查平均位置和目标位置。
   - 检查软限位越界、跟踪误差、扭矩 p95/最大值和超过 80% 限制的比例。
