@@ -40,6 +40,9 @@ parser.add_argument(
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--manual_headless", action="store_true", default=False, help=f"Manual Headless mode for convenient debug in IDE. \
                                     Available only when app_launcher has been modified, Otherwise, there is no effect for this parameter.")
+parser.add_argument("--command_x", type=float, default=None, help="Fixed forward velocity command (m/s).")
+parser.add_argument("--command_y", type=float, default=None, help="Fixed lateral velocity command (m/s).")
+parser.add_argument("--command_yaw", type=float, default=None, help="Fixed yaw rate command (rad/s).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -101,6 +104,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    if any(v is not None for v in (args_cli.command_x, args_cli.command_y, args_cli.command_yaw)):
+        if not hasattr(env_cfg, "commands") or not hasattr(env_cfg.commands, "base_velocity"):
+            raise ValueError(f"Task '{args_cli.task}' does not support velocity command overrides.")
+        command_cfg = env_cfg.commands.base_velocity
+        command_cfg.heading_command = False
+        command_cfg.rel_heading_envs = 0.0
+        if args_cli.command_x is not None:
+            command_cfg.ranges.lin_vel_x = (args_cli.command_x, args_cli.command_x)
+        if args_cli.command_y is not None:
+            command_cfg.ranges.lin_vel_y = (args_cli.command_y, args_cli.command_y)
+        if args_cli.command_yaw is not None:
+            command_cfg.ranges.ang_vel_z = (args_cli.command_yaw, args_cli.command_yaw)
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)

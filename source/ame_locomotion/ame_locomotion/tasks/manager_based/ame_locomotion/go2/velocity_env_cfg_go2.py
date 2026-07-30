@@ -98,12 +98,12 @@ class MySceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    base_velocity = mdp.PathProgressVelocityCommandCfg(
+    base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
         rel_standing_envs=0.05,
-        rel_heading_envs=0.0,
-        heading_command=False,
+        rel_heading_envs=1.0,
+        heading_command=True,
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
@@ -265,7 +265,7 @@ class RewardsCfg:
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_exp,
         weight=3.0,
-        params={"command_name": "base_velocity", "std": 1.0},
+        params={"command_name": "base_velocity", "std": 0.25},
     )
     # unitree_rl_lab Go2: penalize head / leg links touching terrain (not terminate).
     undesired_contacts = RewTerm(
@@ -379,7 +379,7 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_path_progress)
+    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
 
 
 @configclass

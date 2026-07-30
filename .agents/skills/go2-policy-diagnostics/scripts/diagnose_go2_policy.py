@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import sys
 from pathlib import Path
@@ -28,6 +29,9 @@ parser.add_argument("--contact_threshold", type=float, default=1.0)
 parser.add_argument("--command_x", type=float, default=0.6)
 parser.add_argument("--command_y", type=float, default=0.0)
 parser.add_argument("--command_yaw", type=float, default=0.0)
+parser.add_argument("--max_mean_abs_wz_error", type=float, default=0.3)
+parser.add_argument("--min_straight_progress_ratio", type=float, default=0.5)
+parser.add_argument("--max_path_to_displacement_ratio", type=float, default=2.0)
 parser.add_argument("--output_dir", type=str, default="diagnostics/go2_policy")
 parser.add_argument("--seed", type=int, default=42)
 cli_args.add_rsl_rl_args(parser)
@@ -93,6 +97,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     command_cfg.ranges.ang_vel_z = (args_cli.command_yaw, args_cli.command_yaw)
 
     checkpoint = retrieve_file_path(args_cli.checkpoint)
+    # Play configurations may add a visualization camera. Diagnostics are headless and
+    # explicitly disable cameras, so remove it before constructing the environment.
+    if hasattr(env_cfg.scene, "visualize_cam"):
+        env_cfg.scene.visualize_cam = None
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
@@ -156,6 +164,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "pitch": [],
         "inclination": [],
         "lin_vel": [],
+        "ang_vel": [],
+        "root_pos": [],
+        "yaw": [],
+        "command": [],
         "rewards": [],
         "actions": [],
         "joint_pos": [],
@@ -175,10 +187,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     previous_foot_contacts = torch.zeros(
         robot.data.root_pos_w.shape[0], len(foot_ids), dtype=torch.bool, device=env.unwrapped.device
     )
+    initial_root_pos = robot.data.root_pos_w.detach().clone()
+    initial_yaw = euler_xyz_from_quat(robot.data.root_quat_w)[2].detach().clone()
 
     header = [
-        "step", "time_s", "reward", "done", "base_height_m", "roll_rad", "pitch_rad", "yaw_rad",
-        "inclination_rad", "command_vx", "command_vy", "command_wz", "base_vx", "base_vy", "base_vz",
+        "step", "time_s", "reward", "done", "root_x_m", "root_y_m", "relative_x_m", "relative_y_m",
+        "base_height_m", "roll_rad", "pitch_rad", "yaw_rad", "inclination_rad",
+        "command_vx", "command_vy", "command_wz", "base_vx", "base_vy", "base_vz",
+        "base_wx", "base_wy", "base_wz",
     ]
     for name in joint_names:
         header.extend((f"{name}.action", f"{name}.pos", f"{name}.target", f"{name}.vel", f"{name}.torque"))
@@ -216,6 +232,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     "pitch": pitch,
                     "inclination": inclination,
                     "lin_vel": robot.data.root_lin_vel_b,
+                    "ang_vel": robot.data.root_ang_vel_b,
+                    "root_pos": robot.data.root_pos_w,
+                    "yaw": yaw,
+                    "command": command,
                     "rewards": rewards,
                     "actions": actions,
                     "joint_pos": robot.data.joint_pos,
@@ -253,6 +273,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     step * env.unwrapped.step_dt,
                     float(rewards[0].item()),
                     int(dones[0].item()),
+                    float(robot.data.root_pos_w[0, 0].item()),
+                    float(robot.data.root_pos_w[0, 1].item()),
+                    float((robot.data.root_pos_w[0, 0] - initial_root_pos[0, 0]).item()),
+                    float((robot.data.root_pos_w[0, 1] - initial_root_pos[0, 1]).item()),
                     float(robot.data.root_pos_w[0, 2].item()),
                     float(roll[0].item()),
                     float(pitch[0].item()),
@@ -264,6 +288,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     float(robot.data.root_lin_vel_b[0, 0].item()),
                     float(robot.data.root_lin_vel_b[0, 1].item()),
                     float(robot.data.root_lin_vel_b[0, 2].item()),
+                    float(robot.data.root_ang_vel_b[0, 0].item()),
+                    float(robot.data.root_ang_vel_b[0, 1].item()),
+                    float(robot.data.root_ang_vel_b[0, 2].item()),
                 ]
                 for joint_id in range(len(joint_names)):
                     row.extend(
@@ -292,6 +319,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "base_vx_mps": stacked["lin_vel"][..., 0],
         "base_vy_mps": stacked["lin_vel"][..., 1],
         "base_vz_mps": stacked["lin_vel"][..., 2],
+        "base_wz_radps": stacked["ang_vel"][..., 2],
+        "abs_wz_tracking_error_radps": (
+            stacked["ang_vel"][..., 2] - stacked["command"][..., 2]
+        ).abs(),
         "reward_per_step": stacked["rewards"],
         "done_fraction": stacked["dones"].float(),
     }
@@ -307,14 +338,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     foot_contacts = stacked["foot_contacts"].bool()  # [time, env, foot]
     touchdowns = stacked["touchdowns"].bool()
     velocity_x = stacked["lin_vel"][..., 0]
+    angular_velocity_z = stacked["ang_vel"][..., 2]
+    commands = stacked["command"]
+    root_pos = stacked["root_pos"]
     terrain_levels = stacked["terrain_levels"].float()
     terrain_types = stacked["terrain_types"][0].long()
     command_x = float(args_cli.command_x)
     per_env_path = os.path.join(args_cli.output_dir, "env_metrics.csv")
+    verdict_path = os.path.join(args_cli.output_dir, "task_verdict.csv")
+    verdict_rows = []
     with open(per_env_path, "w", newline="", encoding="utf-8") as stream:
         fieldnames = [
             "env_id", "terrain_type_id", "terrain_type_name", "terrain_level_mean", "terrain_level_final",
             "mean_vx_mps", "p05_vx_mps", "mean_abs_vx_error_mps", "fraction_vx_below_25pct_cmd",
+            "mean_wz_radps", "mean_abs_wz_error_radps", "p95_abs_wz_error_radps",
+            "fraction_abs_wz_error_above_0_3", "net_heading_change_rad", "total_abs_turn_rad",
+            "forward_progress_from_start_m", "lateral_displacement_from_start_m",
+            "commanded_forward_distance_m", "straight_progress_ratio",
+            "xy_path_length_m", "path_to_displacement_ratio",
             "mean_reward", "base_vz_std_mps", "base_vz_p95_abs_mps", "base_height_std_m",
             "mean_contact_count", "all_feet_air_fraction", "all_feet_contact_fraction",
             "simultaneous_touchdown_ge2_fraction", "simultaneous_touchdown_ge3_fraction",
@@ -324,16 +365,47 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         writer.writeheader()
         for env_id in range(velocity_x.shape[1]):
             vx = velocity_x[:, env_id]
+            wz = angular_velocity_z[:, env_id]
+            command = commands[:, env_id]
+            wz_error = wz - command[:, 2]
             vz = stacked["lin_vel"][:, env_id, 2]
             base_height = stacked["base_height"][:, env_id]
             contacts = foot_contacts[:, env_id]
             td = touchdowns[:, env_id]
             td_count = td.sum(dim=1).float()
+            displacement_w = root_pos[-1, env_id, :2] - root_pos[0, env_id, :2]
+            initial_heading = float(initial_yaw[env_id].cpu().item())
+            initial_forward = torch.tensor([math.cos(initial_heading), math.sin(initial_heading)])
+            initial_lateral = torch.tensor([-initial_forward[1], initial_forward[0]])
+            path_steps = root_pos[1:, env_id, :2] - root_pos[:-1, env_id, :2]
+            path_length = float(torch.linalg.norm(path_steps, dim=1).sum().item())
+            displacement_norm = float(torch.linalg.norm(displacement_w).item())
+            forward_progress = float(torch.dot(displacement_w, initial_forward).item())
+            commanded_forward_distance = float((command[:-1, 0] * env.unwrapped.step_dt).sum().item())
+            straight_command = bool(
+                command[:, 1].abs().max().item() < 1.0e-3
+                and command[:, 2].abs().max().item() < 1.0e-3
+                and commanded_forward_distance > 1.0e-6
+            )
+            straight_progress_ratio = (
+                forward_progress / commanded_forward_distance if straight_command else None
+            )
+            path_to_displacement_ratio = path_length / max(displacement_norm, 1.0e-6)
+            mean_abs_wz_error = float(wz_error.abs().mean().item())
+            failure_reasons = []
+            if straight_command and straight_progress_ratio < args_cli.min_straight_progress_ratio:
+                failure_reasons.append("insufficient_world_progress")
+            if straight_command and mean_abs_wz_error > args_cli.max_mean_abs_wz_error:
+                failure_reasons.append("unexpected_yaw_rate")
+            if straight_command and path_to_displacement_ratio > args_cli.max_path_to_displacement_ratio:
+                failure_reasons.append("looping_or_large_detour")
+            terrain_type_name = (
+                terrain_type_names[int(terrain_types[env_id].item())] if terrain_type_names else "unknown"
+            )
             row = {
                 "env_id": env_id,
                 "terrain_type_id": int(terrain_types[env_id].item()),
-                "terrain_type_name": terrain_type_names[int(terrain_types[env_id].item())]
-                if terrain_type_names else "unknown",
+                "terrain_type_name": terrain_type_name,
                 "terrain_level_mean": float(terrain_levels[:, env_id].mean().item()),
                 "terrain_level_final": float(terrain_levels[-1, env_id].item()),
                 "mean_vx_mps": float(vx.mean().item()),
@@ -341,6 +413,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 "mean_abs_vx_error_mps": float((vx - command_x).abs().mean().item()),
                 "fraction_vx_below_25pct_cmd": float((vx < 0.25 * command_x).float().mean().item())
                 if command_x > 0.0 else 0.0,
+                "mean_wz_radps": float(wz.mean().item()),
+                "mean_abs_wz_error_radps": mean_abs_wz_error,
+                "p95_abs_wz_error_radps": _percentile(wz_error.abs(), 0.95),
+                "fraction_abs_wz_error_above_0_3": float((wz_error.abs() > 0.3).float().mean().item()),
+                "net_heading_change_rad": float((wz * env.unwrapped.step_dt).sum().item()),
+                "total_abs_turn_rad": float((wz.abs() * env.unwrapped.step_dt).sum().item()),
+                "forward_progress_from_start_m": forward_progress,
+                "lateral_displacement_from_start_m": float(torch.dot(displacement_w, initial_lateral).item()),
+                "commanded_forward_distance_m": commanded_forward_distance,
+                "straight_progress_ratio": straight_progress_ratio,
+                "xy_path_length_m": path_length,
+                "path_to_displacement_ratio": path_to_displacement_ratio,
                 "mean_reward": float(stacked["rewards"][:, env_id].mean().item()),
                 "base_vz_std_mps": float(vz.std(unbiased=False).item()),
                 "base_vz_p95_abs_mps": _percentile(vz.abs(), 0.95),
@@ -356,8 +440,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     contacts[:, foot_index].float().mean().item()
                 )
             writer.writerow(row)
+            verdict_rows.append(
+                {
+                    "env_id": env_id,
+                    "terrain_type_name": terrain_type_name,
+                    "task_evaluated": straight_command,
+                    "task_passed": straight_command and not failure_reasons,
+                    "failure_reasons": ";".join(failure_reasons),
+                }
+            )
 
     print(f"[RESULT] wrote per-environment metrics to {per_env_path}")
+    with open(verdict_path, "w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=["env_id", "terrain_type_name", "task_evaluated", "task_passed", "failure_reasons"],
+        )
+        writer.writeheader()
+        writer.writerows(verdict_rows)
+    evaluated_rows = [row for row in verdict_rows if row["task_evaluated"]]
+    failed_rows = [row for row in evaluated_rows if not row["task_passed"]]
+    if evaluated_rows:
+        status = "FAIL" if failed_rows else "PASS"
+        print(f"[{status}] straight-command task: {len(failed_rows)}/{len(evaluated_rows)} environments failed")
+    else:
+        print("[INFO] task verdict skipped: command is not fixed straight motion")
+    print(f"[RESULT] wrote task verdict to {verdict_path}")
 
     with open(rewards_path, "w", newline="", encoding="utf-8") as stream:
         fieldnames = ["term", "mean_per_step", "std", "p05", "p50", "p95", "min", "max"]
@@ -495,6 +603,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"  |pitch|: {stacked['pitch'].abs().mean().item():.3f} rad")
     print(f"  inclination: {_stats(stacked['inclination'])['mean']:.3f} rad")
     print(f"  base vx: {_stats(stacked['lin_vel'][..., 0])['mean']:.3f} m/s (command {args_cli.command_x:.3f})")
+    print(
+        f"  |wz error|: {(stacked['ang_vel'][..., 2] - stacked['command'][..., 2]).abs().mean().item():.3f} "
+        f"rad/s (command {args_cli.command_yaw:.3f})"
+    )
     print(f"  done rate: {stacked['dones'].float().mean().item():.5f} per policy step")
     print("  foot contact fractions:")
     for body_id in foot_ids:

@@ -139,6 +139,8 @@ uv run --python .venv/bin/python \
 3. 是否 `git push`？
 4. 是否在 4090 的 `ame:0` 停训并 `bash run_train.sh` 开训？（先确认代码已在 4090；开训后回报新 run）
 
+若结论是“需要重训”，收尾提问必须包含第 4 项，不得只问记录、commit 或 push。用户同时批准 push 和开训时，默认顺序为 commit → push → 4090 `git pull --ff-only` → 停止 `ame:0.0` 旧进程 → `bash run_train.sh`。
+
 ### Debug log 写法
 
 - 每节一个训练 run：`<run> / <checkpoint> — <一句话结果>`；只在新 run 时开新小节
