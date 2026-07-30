@@ -11,6 +11,8 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class AMEActorCriticCfg(RslRlPpoActorCriticCfg):
     map_scan_dim: tuple[int, int, int] = (33, 21, 3)
+    # Preserve the full 10 cm map resolution for foothold selection.
+    cnn_downsample: bool = False
 
 
 @configclass
@@ -55,6 +57,7 @@ class Go2AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     policy = AMEActorCriticCfg(
         class_name="ActorCriticEncoder",
         map_scan_dim=(26, 16, 3),
+        cnn_downsample=False,
         init_noise_std=1.0,
         actor_obs_normalization=False,
         critic_obs_normalization=False,

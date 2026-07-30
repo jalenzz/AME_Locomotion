@@ -26,7 +26,7 @@ class ActorCriticEncoder(nn.Module):
         map_scan_dim=(33, 21, 3),
         mha_dim=64,  # MHA feature dimension
         num_heads=16,  # Number of attention heads
-        cnn_downsample=True,
+        cnn_downsample=False,
         attach_global=False,  # Add max-pooled global feature to query and policy input
         **kwargs,
     ):
@@ -44,10 +44,12 @@ class ActorCriticEncoder(nn.Module):
         self.cnn_downsample = cnn_downsample
         self.attach_global = attach_global
 
-        # Option A: concatenate coordinates to CNN features
-        # self.cnn_output_dim = mha_dim - 3  # d-3
-        # Option B (current): use pure CNN features as MHA input (no coord concat)
-        self.cnn_output_dim = mha_dim
+        # AME encodes the height channel with a spatial CNN and then appends the
+        # original point coordinates.  Keeping three channels for the coordinates
+        # leaves d-3 channels for the learned local terrain feature.
+        self.cnn_output_dim = mha_dim - self.coord_dim
+        if self.cnn_output_dim <= 0:
+            raise ValueError(f"mha_dim must be larger than coord_dim, got {mha_dim} and {self.coord_dim}")
 
         self.obs_groups = obs_groups
         num_actor_obs = 0
@@ -118,9 +120,13 @@ class ActorCriticEncoder(nn.Module):
 
     def _build_terrain_encoder(self, actor_proprio_dim, critic_proprio_dim, attach_global):
         """Build terrain encoder modules shared by actor and critic."""
+        # The paper uses two full-resolution 5x5 convolutions.  The optional
+        # downsampled branch is retained for backwards-compatible experiments,
+        # but is disabled by default because it discards the fine foothold
+        # geometry needed by the Go2 sparse terrains.
         if not self.cnn_downsample:
             self.map_cnn = nn.Sequential(
-                nn.Conv2d(3, 16, kernel_size=5, padding=2),
+                nn.Conv2d(1, 16, kernel_size=5, padding=2),
                 nn.ReLU(),
                 nn.BatchNorm2d(16),
                 nn.Conv2d(16, self.cnn_output_dim, kernel_size=5, padding=2),
@@ -129,7 +135,7 @@ class ActorCriticEncoder(nn.Module):
             )
         else:
             self.map_cnn = nn.Sequential(
-                nn.Conv2d(3, 16, kernel_size=5, padding=2, stride=2),
+                nn.Conv2d(1, 16, kernel_size=5, padding=2, stride=2),
                 nn.ReLU(),
                 nn.BatchNorm2d(16),
                 nn.Conv2d(16, self.cnn_output_dim, kernel_size=3, padding=1),
@@ -159,24 +165,19 @@ class ActorCriticEncoder(nn.Module):
         # Stored order and reshape order differ, so swap W/L in reshape to keep spatial alignment.
         map_scan = obs[:, -self.L * self.W * self.coord_dim:].reshape(-1, self.W, self.L, self.coord_dim)
 
-        # Height-only variant
-        # height_map = map_scan[:, :, :, 2:3]  # [batch, W, L, 1]
-        # Full 3D-coordinate variant (current)
-        height_map = map_scan
-
-        height_map = height_map.permute(0, 3, 1, 2)
+        # Only heights enter the CNN.  Raw x/y/z coordinates are concatenated
+        # after the CNN so their metric scale cannot overwhelm small height
+        # differences in gaps and stepping stones.
+        height_map = map_scan[..., 2:3].permute(0, 3, 1, 2)
         cnn_features = self.map_cnn(height_map)
         cnn_features = cnn_features.permute(0, 2, 3, 1).flatten(1, 2)
 
-        # # Optional branch: concatenate sampled 3D coordinates with CNN features
-        # if not self.cnn_downsample:
-        #     coords = map_scan.reshape(-1, self.L * self.W, self.coord_dim)
-        #     local_features = torch.cat([cnn_features, coords], dim=-1)  # [batch, L*W, mha_dim]
-        # else:
-        #     # Downsample coordinates to match downsampled CNN grid
-        #     coords = map_scan[:, ::2, ::2, :].reshape(-1, (self.L // 2 + 1) * (self.W // 2 + 1), self.coord_dim)
-        #     local_features = torch.cat([cnn_features, coords], dim=-1)  # [batch, L'*W', mha_dim]
-        local_features = cnn_features  # Current setting: use CNN features only as local features
+        if self.cnn_downsample:
+            # Match the stride-2 CNN output grid (W//2, L//2 rounded up).
+            coords = map_scan[:, ::2, ::2, :].reshape(cnn_features.shape[0], -1, self.coord_dim)
+        else:
+            coords = map_scan.reshape(cnn_features.shape[0], -1, self.coord_dim)
+        local_features = torch.cat([cnn_features, coords], dim=-1)
         
         # Extract proprioceptive features (all non-map terms)
         proprio_obs = obs[:, :-self.L * self.W * self.coord_dim]
