@@ -28,6 +28,7 @@ class ActorCriticEncoder(nn.Module):
         num_heads=16,  # Number of attention heads
         cnn_downsample=False,
         attach_global=False,  # Add max-pooled global feature to query and policy input
+        attention_batch_size=512,
         **kwargs,
     ):
         if kwargs:
@@ -43,6 +44,7 @@ class ActorCriticEncoder(nn.Module):
         self.L, self.W, self.coord_dim = map_scan_dim
         self.cnn_downsample = cnn_downsample
         self.attach_global = attach_global
+        self.attention_batch_size = attention_batch_size
 
         # AME encodes the height channel with a spatial CNN and then appends the
         # original point coordinates.  Keeping three channels for the coordinates
@@ -198,12 +200,24 @@ class ActorCriticEncoder(nn.Module):
             proprio_embedding = self.query_projector(query_input)
 
         proprio_embedding = proprio_embedding.unsqueeze(1)
-        mha_output, attention_weights = self.mha(
-            query=proprio_embedding,
-            key=local_features,
-            value=local_features,
-            need_weights=return_attention,
-        )
+        # Full-resolution maps are important for sparse footholds, but a single
+        # 2048-environment MHA projection exceeds a 24 GB GPU.  Chunk only the
+        # independent batch dimension; outputs and gradients remain equivalent.
+        outputs = []
+        weights = [] if return_attention else None
+        for start in range(0, proprio_embedding.shape[0], self.attention_batch_size):
+            stop = start + self.attention_batch_size
+            output, weight = self.mha(
+                query=proprio_embedding[start:stop],
+                key=local_features[start:stop],
+                value=local_features[start:stop],
+                need_weights=return_attention,
+            )
+            outputs.append(output)
+            if return_attention:
+                weights.append(weight)
+        mha_output = torch.cat(outputs, dim=0)
+        attention_weights = torch.cat(weights, dim=0) if return_attention else None
 
         mha_output = mha_output.squeeze(1)
         encoded_obs = torch.cat([mha_output, proprio_obs], dim=-1)
