@@ -159,7 +159,7 @@ class ActorCriticEncoder(nn.Module):
             f"MHA dim={self.mha_dim}, heads={self.num_heads}"
         )
 
-    def _encode_terrain(self, obs):
+    def _encode_terrain(self, obs, return_attention: bool = False):
         """Encode terrain/map observations into attention-ready features."""
         # Extract map scan from the tail of observation.
         # Stored order and reshape order differ, so swap W/L in reshape to keep spatial alignment.
@@ -202,6 +202,7 @@ class ActorCriticEncoder(nn.Module):
             query=proprio_embedding,
             key=local_features,
             value=local_features,
+            need_weights=return_attention,
         )
 
         mha_output = mha_output.squeeze(1)
@@ -236,7 +237,7 @@ class ActorCriticEncoder(nn.Module):
         if torch.isnan(obs).any() or torch.isinf(obs).any():
             print(f"Warning: obs contains NaN or Inf: {obs}")
 
-        encoded_obs, _ = self._encode_terrain(obs)
+        encoded_obs, _ = self._encode_terrain(obs, return_attention=False)
         mean = self.actor(encoded_obs)
 
         if torch.isnan(mean).any() or torch.isinf(mean).any():
@@ -259,13 +260,13 @@ class ActorCriticEncoder(nn.Module):
     def act_inference(self, obs):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
-        encoded_obs, attention_weights = self._encode_terrain(actor_obs)
+        encoded_obs, attention_weights = self._encode_terrain(actor_obs, return_attention=True)
         return self.actor(encoded_obs), attention_weights
 
     def evaluate(self, obs, **kwargs):
         critic_obs = self.get_critic_obs(obs)
         critic_obs = self.critic_obs_normalizer(critic_obs)
-        encoded_obs, _ = self._encode_terrain(critic_obs)
+        encoded_obs, _ = self._encode_terrain(critic_obs, return_attention=False)
         value = self.critic(encoded_obs)
         if torch.isnan(value).any() or torch.isinf(value).any():
             print(f"Warning: critic value contains NaN or Inf, {value}")
