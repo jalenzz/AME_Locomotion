@@ -217,7 +217,9 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+            # Keep the initial Go2 support polygon inside the reduced 1.5 m
+            # center platforms (the old +/-0.5 m range was sized for 2.0 m).
+            "pose_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3), "yaw": (-3.14, 3.14)},
             "velocity_range": {
                 "x": (0.0, 0.0),
                 "y": (0.0, 0.0),
@@ -345,10 +347,26 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
         },
     )
-    air_time_variance = RewTerm(
-        func=mdp.air_time_variance_penalty,
+    # Keep every leg participating in locomotion.  The previous variance-only
+    # term allowed one foot to remain airborne indefinitely (a cheap three-leg
+    # local optimum), which is especially harmful on gaps and stepping stones.
+    foot_air_time = RewTerm(
+        func=mdp.foot_air_time_penalty,
         weight=-1.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")},
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
+            "max_air_time": 0.5,
+            "clip": 0.5,
+        },
+    )
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_reward,
+        weight=0.5,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
+            "command_name": "base_velocity",
+            "threshold": 0.05,
+        },
     )
 
     # Stage-2-only orange terms in the paper's Table 2.

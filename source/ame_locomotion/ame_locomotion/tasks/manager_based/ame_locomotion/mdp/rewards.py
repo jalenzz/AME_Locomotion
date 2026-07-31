@@ -262,6 +262,49 @@ def air_time_variance_penalty(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg
     )
 
 
+def foot_air_time_penalty(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    max_air_time: float = 0.5,
+    clip: float = 0.5,
+) -> torch.Tensor:
+    """Penalize a foot that remains airborne beyond a normal swing duration.
+
+    The old variance term only compares the four ``last_*_time`` values.  A
+    leg that never touches down can therefore become a cheap, persistent
+    three-leg gait.  This term uses the contact sensor's instantaneous air
+    timer and only activates after ``max_air_time``; ordinary swing phases
+    remain free while a permanently unloaded leg incurs a bounded cost.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    current_air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    excess = torch.clamp(current_air_time - max_air_time, min=0.0, max=clip)
+    return torch.sum(excess, dim=1)
+
+
+def feet_air_time_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+    threshold: float = 0.1,
+) -> torch.Tensor:
+    """Reward each foot for completing a swing and touching down.
+
+    This follows the standard Isaac Lab Go2 ``feet_air_time`` shaping: the
+    reward is emitted only on the first contact after an air phase and is
+    gated off for standing commands.  It complements the bounded penalty
+    above by making four-foot participation useful rather than merely
+    avoiding a penalty.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    current_contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    first_contact = (current_contact_time > 0.0) & (current_contact_time <= env.step_dt + 1.0e-5)
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    reward = torch.sum(torch.clamp(last_air_time - threshold, min=0.0) * first_contact, dim=1)
+    command_norm = torch.linalg.norm(env.command_manager.get_command(command_name), dim=1)
+    return reward * (command_norm > 0.1)
+
+
 """
 Feet Gait rewards.
 """

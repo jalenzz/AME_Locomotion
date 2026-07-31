@@ -32,6 +32,12 @@ parser.add_argument("--command_yaw", type=float, default=0.0)
 parser.add_argument("--max_mean_abs_wz_error", type=float, default=0.3)
 parser.add_argument("--min_straight_progress_ratio", type=float, default=0.5)
 parser.add_argument("--max_path_to_displacement_ratio", type=float, default=2.0)
+parser.add_argument(
+    "--platform_width_override",
+    type=float,
+    default=None,
+    help="For diagnosis only, override hf_gaps/hf_steppingstones central platform width in meters.",
+)
 parser.add_argument("--output_dir", type=str, default="diagnostics/go2_policy")
 parser.add_argument("--seed", type=int, default=42)
 cli_args.add_rsl_rl_args(parser)
@@ -50,6 +56,7 @@ import gymnasium as gym
 import torch
 
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, DirectRLEnvCfg, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.math import euler_xyz_from_quat, quat_apply_inverse
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
@@ -58,6 +65,7 @@ from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 import ame_locomotion.tasks  # noqa: F401
 import isaaclab_tasks  # noqa: F401
+from ame_locomotion.tasks.manager_based.ame_locomotion.mdp.observations import elevation_map, ray_hits_s
 
 
 def _policy_actions(policy, obs):
@@ -96,6 +104,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     command_cfg.ranges.lin_vel_y = (args_cli.command_y, args_cli.command_y)
     command_cfg.ranges.ang_vel_z = (args_cli.command_yaw, args_cli.command_yaw)
 
+    if args_cli.platform_width_override is not None and env_cfg.scene.terrain.terrain_generator is not None:
+        for terrain_name in ("hf_gaps", "hf_steppingstones"):
+            terrain_cfg = env_cfg.scene.terrain.terrain_generator.sub_terrains.get(terrain_name)
+            if terrain_cfg is not None and hasattr(terrain_cfg, "platform_width"):
+                terrain_cfg.platform_width = args_cli.platform_width_override
+
     checkpoint = retrieve_file_path(args_cli.checkpoint)
     # Play configurations may add a visualization camera. Diagnostics are headless and
     # explicitly disable cameras, so remove it before constructing the environment.
@@ -119,6 +133,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     obs = obs_result[0] if isinstance(obs_result, tuple) else obs_result
     robot = env.unwrapped.scene["robot"]
     contact_sensor = env.unwrapped.scene["contact_forces"]
+    height_scanner = env.unwrapped.scene["height_scanner"]
     joint_names = list(robot.joint_names)
     body_names = list(contact_sensor.body_names)
     foot_ids = [i for i, name in enumerate(body_names) if name.endswith("_foot")]
@@ -133,6 +148,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     terrain_generator_cfg = env_cfg.scene.terrain.terrain_generator
     terrain_type_names = []
+    terrain_platform_widths = []
     if terrain_generator_cfg is not None:
         subterrain_names = list(terrain_generator_cfg.sub_terrains.keys())
         proportions = [float(cfg.proportion) for cfg in terrain_generator_cfg.sub_terrains.values()]
@@ -146,6 +162,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             ratio = column / terrain_generator_cfg.num_cols + 0.001
             subterrain_index = next(i for i, limit in enumerate(cumulative) if ratio < limit)
             terrain_type_names.append(subterrain_names[subterrain_index])
+            terrain_platform_widths.append(
+                float(getattr(terrain_generator_cfg.sub_terrains[subterrain_names[subterrain_index]], "platform_width", 0.0))
+            )
         print(f"[INFO] terrain type columns: {dict(enumerate(terrain_type_names))}")
 
     os.makedirs(args_cli.output_dir, exist_ok=True)
@@ -181,6 +200,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "terrain_levels": [],
         "terrain_types": [],
         "dones": [],
+        "terrain_local_xy": [],
+        "platform_margin": [],
+        "near_platform_edge": [],
+        "outside_platform": [],
+        "scan_forward_min": [],
+        "scan_forward_gap_fraction": [],
+        "scan_center_min": [],
+        "edge_touchdowns": [],
+        "current_air_time": [],
+        "last_air_time": [],
     }
     reward_term_samples = {name: [] for name in env.unwrapped.reward_manager.active_terms}
     touchdown_pos_samples = [[] for _ in foot_ids]
@@ -213,11 +242,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             forces = torch.linalg.norm(contact_sensor.data.net_forces_w, dim=-1)
             foot_contacts = forces[:, foot_ids] > args_cli.contact_threshold
             touchdowns = foot_contacts & ~previous_foot_contacts
+            current_air_time = contact_sensor.data.current_air_time[:, foot_ids]
+            last_air_time = contact_sensor.data.last_air_time[:, foot_ids]
             foot_pos_w = robot.data.body_pos_w[:, robot_foot_ids] - robot.data.root_pos_w.unsqueeze(1)
             foot_pos_b = quat_apply_inverse(
                 robot.data.root_quat_w.unsqueeze(1).expand(-1, len(robot_foot_ids), -1).reshape(-1, 4),
                 foot_pos_w.reshape(-1, 3),
             ).reshape(robot.data.root_pos_w.shape[0], len(robot_foot_ids), 3)
+            terrain_origins = env.unwrapped.scene.terrain.env_origins
+            terrain_types_now = env.unwrapped.scene.terrain.terrain_types.long()
+            platform_width = torch.zeros_like(terrain_types_now, dtype=torch.float)
+            if terrain_platform_widths:
+                width_table = torch.tensor(terrain_platform_widths, device=platform_width.device)
+                valid_types = terrain_types_now.clamp(min=0, max=len(width_table) - 1)
+                platform_width = width_table[valid_types]
+            local_xy = robot.data.root_pos_w[:, :2] - terrain_origins[:, :2]
+            platform_margin = platform_width * 0.5 - local_xy.abs().amax(dim=1)
+            near_platform_edge = (platform_width > 0.0) & (platform_margin.abs() <= 0.25)
+            outside_platform = (platform_width > 0.0) & (platform_margin < 0.0)
+
+            # Clean yaw-aligned scan features.  These distinguish "the map
+            # contains a visible drop but the policy stops" from "the policy
+            # never receives a drop in its forward scan".
+            scan_local = ray_hits_s(env.unwrapped, SceneEntityCfg("height_scanner")).reshape(
+                robot.data.root_pos_w.shape[0], -1, 3
+            )
+            scan_map = elevation_map(env.unwrapped, SceneEntityCfg("height_scanner"), noise=False).reshape(
+                robot.data.root_pos_w.shape[0], -1, 3
+            )
+            forward_mask = scan_local[..., 0] > 0.05
+            center_mask = scan_local[..., 0].abs() < 0.4
+            scan_forward_min = scan_map[..., 2].masked_fill(~forward_mask, 0.0).min(dim=1).values
+            scan_center_min = scan_map[..., 2].masked_fill(~center_mask, 0.0).min(dim=1).values
+            scan_forward_gap_fraction = ((scan_map[..., 2] < -0.5) & forward_mask).float().mean(dim=1)
             roll, pitch, yaw = euler_xyz_from_quat(robot.data.root_quat_w)
             inclination = torch.acos((-robot.data.projected_gravity_b[:, 2]).clamp(-1.0, 1.0))
             command = env.unwrapped.command_manager.get_command("base_velocity")
@@ -249,6 +306,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     "terrain_levels": env.unwrapped.scene.terrain.terrain_levels,
                     "terrain_types": env.unwrapped.scene.terrain.terrain_types,
                     "dones": dones,
+                    "terrain_local_xy": local_xy,
+                    "platform_margin": platform_margin,
+                    "near_platform_edge": near_platform_edge,
+                    "outside_platform": outside_platform,
+                    "scan_forward_min": scan_forward_min,
+                    "scan_forward_gap_fraction": scan_forward_gap_fraction,
+                    "scan_center_min": scan_center_min,
+                    "edge_touchdowns": touchdowns & near_platform_edge.unsqueeze(1),
+                    "current_air_time": current_air_time,
+                    "last_air_time": last_air_time,
                 }
                 for name, value in values.items():
                     samples[name].append(value.detach().cpu())
@@ -343,6 +410,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     root_pos = stacked["root_pos"]
     terrain_levels = stacked["terrain_levels"].float()
     terrain_types = stacked["terrain_types"][0].long()
+    terrain_local_xy = stacked["terrain_local_xy"].float()
+    platform_margin = stacked["platform_margin"].float()
+    near_platform_edge = stacked["near_platform_edge"].bool()
+    outside_platform = stacked["outside_platform"].bool()
+    scan_forward_min = stacked["scan_forward_min"].float()
+    scan_forward_gap_fraction = stacked["scan_forward_gap_fraction"].float()
+    scan_center_min = stacked["scan_center_min"].float()
+    edge_touchdowns = stacked["edge_touchdowns"].bool()
     command_x = float(args_cli.command_x)
     per_env_path = os.path.join(args_cli.output_dir, "env_metrics.csv")
     verdict_path = os.path.join(args_cli.output_dir, "task_verdict.csv")
@@ -360,6 +435,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "mean_contact_count", "all_feet_air_fraction", "all_feet_contact_fraction",
             "simultaneous_touchdown_ge2_fraction", "simultaneous_touchdown_ge3_fraction",
             "FL_contact_fraction", "FR_contact_fraction", "RL_contact_fraction", "RR_contact_fraction",
+            "platform_width_m", "start_local_x_m", "start_local_y_m", "final_local_x_m", "final_local_y_m",
+            "max_abs_local_xy_m", "final_platform_margin_m", "fraction_inside_platform",
+            "fraction_near_platform_edge", "fraction_outside_platform", "edge_dwell_s",
+            "mean_vx_inside_platform_mps", "mean_vx_near_platform_edge_mps", "mean_vx_outside_platform_mps",
+            "first_platform_exit_time_s", "edge_touchdowns_FL", "edge_touchdowns_FR",
+            "edge_touchdowns_RL", "edge_touchdowns_RR", "forward_scan_min_m", "forward_scan_gap_fraction",
+            "center_scan_min_m",
         ]
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
         writer.writeheader()
@@ -392,6 +474,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             )
             path_to_displacement_ratio = path_length / max(displacement_norm, 1.0e-6)
             mean_abs_wz_error = float(wz_error.abs().mean().item())
+            terrain_type_id = int(terrain_types[env_id].item())
+            platform_width_value = (
+                terrain_platform_widths[terrain_type_id]
+                if terrain_platform_widths and 0 <= terrain_type_id < len(terrain_platform_widths)
+                else 0.0
+            )
+            local_xy_env = terrain_local_xy[:, env_id]
+            margin_env = platform_margin[:, env_id]
+            near_edge_env = near_platform_edge[:, env_id]
+            outside_env = outside_platform[:, env_id]
+
+            def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
+                return float(values[mask].mean().item()) if mask.any() else float("nan")
+
+            outside_indices = torch.nonzero(outside_env, as_tuple=False).flatten()
+            first_exit_time = (
+                (args_cli.warmup_steps + int(outside_indices[0].item()) + 1) * env.unwrapped.step_dt
+                if outside_indices.numel()
+                else float("nan")
+            )
             failure_reasons = []
             if straight_command and straight_progress_ratio < args_cli.min_straight_progress_ratio:
                 failure_reasons.append("insufficient_world_progress")
@@ -400,11 +502,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if straight_command and path_to_displacement_ratio > args_cli.max_path_to_displacement_ratio:
                 failure_reasons.append("looping_or_large_detour")
             terrain_type_name = (
-                terrain_type_names[int(terrain_types[env_id].item())] if terrain_type_names else "unknown"
+                terrain_type_names[terrain_type_id] if terrain_type_names else "unknown"
             )
             row = {
                 "env_id": env_id,
-                "terrain_type_id": int(terrain_types[env_id].item()),
+                "terrain_type_id": terrain_type_id,
                 "terrain_type_name": terrain_type_name,
                 "terrain_level_mean": float(terrain_levels[:, env_id].mean().item()),
                 "terrain_level_final": float(terrain_levels[-1, env_id].item()),
@@ -434,10 +536,35 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 "all_feet_contact_fraction": float((contacts.sum(dim=1) == len(foot_ids)).float().mean().item()),
                 "simultaneous_touchdown_ge2_fraction": float((td_count >= 2).float().mean().item()),
                 "simultaneous_touchdown_ge3_fraction": float((td_count >= 3).float().mean().item()),
+                "platform_width_m": platform_width_value,
+                "start_local_x_m": float(local_xy_env[0, 0].item()),
+                "start_local_y_m": float(local_xy_env[0, 1].item()),
+                "final_local_x_m": float(local_xy_env[-1, 0].item()),
+                "final_local_y_m": float(local_xy_env[-1, 1].item()),
+                "max_abs_local_xy_m": float(local_xy_env.abs().amax(dim=1).max().item()),
+                "final_platform_margin_m": float(margin_env[-1].item()),
+                "fraction_inside_platform": float((margin_env >= 0.0).float().mean().item())
+                if platform_width_value > 0.0 else float("nan"),
+                "fraction_near_platform_edge": float(near_edge_env.float().mean().item())
+                if platform_width_value > 0.0 else float("nan"),
+                "fraction_outside_platform": float(outside_env.float().mean().item())
+                if platform_width_value > 0.0 else float("nan"),
+                "edge_dwell_s": float((near_edge_env & (vx < 0.25 * command_x)).float().sum().item() * env.unwrapped.step_dt)
+                if platform_width_value > 0.0 and command_x > 0.0 else float("nan"),
+                "mean_vx_inside_platform_mps": _masked_mean(vx, margin_env >= 0.0),
+                "mean_vx_near_platform_edge_mps": _masked_mean(vx, near_edge_env),
+                "mean_vx_outside_platform_mps": _masked_mean(vx, outside_env),
+                "first_platform_exit_time_s": first_exit_time,
+                "forward_scan_min_m": float(scan_forward_min[:, env_id].mean().item()),
+                "forward_scan_gap_fraction": float(scan_forward_gap_fraction[:, env_id].mean().item()),
+                "center_scan_min_m": float(scan_center_min[:, env_id].mean().item()),
             }
             for foot_index, foot_name in enumerate(sensor_foot_names):
                 row[f"{foot_name.replace('_foot', '')}_contact_fraction"] = float(
                     contacts[:, foot_index].float().mean().item()
+                )
+                row[f"edge_touchdowns_{foot_name.replace('_foot', '')}"] = int(
+                    edge_touchdowns[:, env_id, foot_index].sum().item()
                 )
             writer.writerow(row)
             verdict_rows.append(
@@ -514,6 +641,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "touchdown_samples", "touchdown_mean_x_b_m", "touchdown_p05_x_b_m",
             "touchdown_p50_x_b_m", "touchdown_p95_x_b_m", "touchdown_mean_y_b_m",
             "touchdown_p05_y_b_m", "touchdown_p50_y_b_m", "touchdown_p95_y_b_m",
+            "mean_current_air_time_s", "p95_current_air_time_s", "max_current_air_time_s",
+            "mean_last_air_time_s", "p95_last_air_time_s",
         ]
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
         writer.writeheader()
@@ -521,6 +650,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             mask = contact_force[..., sensor_body_id] > args_cli.contact_threshold
             positions = foot_pos_b[..., foot_index, :][mask]
             row = {"foot": body_names[sensor_body_id], "contact_samples": int(positions.shape[0])}
+            current_air = stacked["current_air_time"][..., foot_index].reshape(-1)
+            last_air = stacked["last_air_time"][..., foot_index].reshape(-1)
+            row.update(
+                {
+                    "mean_current_air_time_s": float(current_air.mean().item()),
+                    "p95_current_air_time_s": _percentile(current_air, 0.95),
+                    "max_current_air_time_s": float(current_air.max().item()),
+                    "mean_last_air_time_s": float(last_air.mean().item()),
+                    "p95_last_air_time_s": _percentile(last_air, 0.95),
+                }
+            )
             if positions.numel():
                 row.update(
                     {

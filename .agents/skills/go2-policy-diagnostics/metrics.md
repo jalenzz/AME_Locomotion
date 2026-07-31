@@ -21,6 +21,7 @@
 ## `env_metrics.csv`
 
 - 按环境比较 `mean_vx_mps`、`fraction_vx_below_25pct_cmd` 与 `terrain_level_mean/final`，识别只在困难地形停住而被均值掩盖的情况
+- 对带中心平台的地形，`platform_margin_m`、`fraction_near_platform_edge`、`edge_dwell_s`、`mean_vx_near_platform_edge_mps` 和 `first_platform_exit_time_s` 直接识别“到边缘后停住”；`forward_scan_min_m` / `forward_scan_gap_fraction` 用来确认前方高度图是否已经包含负障碍
 - 速度跟踪必须同时检查实际 `wz`、`mean_abs_wz_error_radps`、累计转角、世界坐标前向进度和 `path_to_displacement_ratio`。机身坐标系 `vx` 接近命令不代表沿世界直线前进
 - `command_wz=0` 时，持续实际 `wz`、大累计转角或很高的路径/净位移比 → 命令跟踪失败，不能被平均 `vx` 或平均 reward 掩盖
 - 地形课程按机器人相对环境原点的净位移升级；绕圈或只在中心平台内运动不代表完成地形穿越
@@ -38,6 +39,9 @@
 - 对照默认姿态检查平均位置和目标位置
 - 检查软限位越界、跟踪误差、扭矩 p95/最大值和超过 80% 限制的比例
 - `effort_limit_Nm` 接近 `1e9` → 扭矩软限位奖励实际无法触发
+
+`foot_placements.csv` 中的 `mean_current_air_time_s`、`p95_current_air_time_s` 和
+`max_current_air_time_s` 用于发现某一只脚长期悬空；正常摆动应是短时峰值，而不是单脚持续数秒。
 
 ## `rewards.csv`
 
