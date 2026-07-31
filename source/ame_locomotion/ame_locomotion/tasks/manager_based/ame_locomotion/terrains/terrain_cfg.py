@@ -72,7 +72,7 @@ GO2_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
     use_cache=False,
     sub_terrains={
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.15,
+            proportion=0.1,
             step_height_range=(0.05, 0.12),
             step_width=0.3,
             platform_width=3.0,
@@ -80,7 +80,7 @@ GO2_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.15,
+            proportion=0.1,
             step_height_range=(0.05, 0.12),
             step_width=0.3,
             platform_width=3.0,
@@ -88,10 +88,10 @@ GO2_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             holes=False,
         ),
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.15, grid_width=0.45, grid_height_range=(0.05, 0.12), platform_width=2.0,
+            proportion=0.1, grid_width=0.45, grid_height_range=(0.05, 0.12), platform_width=2.0,
         ),
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.15, noise_range=(0.02, 0.06), noise_step=0.02, downsampled_scale=0.1, border_width=0.25,
+            proportion=0.1, noise_range=(0.02, 0.06), noise_step=0.02, downsampled_scale=0.1, border_width=0.25,
         ),
         "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
             proportion=0.1, slope_range=(0.0, 0.3), platform_width=2.0, border_width=0.25,
@@ -100,11 +100,11 @@ GO2_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
             proportion=0.1, slope_range=(0.0, 0.3), platform_width=2.0, border_width=0.25,
         ),
         "hf_steppingstones": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.1, stone_height_max=0.05, stone_width_range=(0.35, 0.55), stone_distance_range=(0.03, 0.15), platform_width=2.0,
+            proportion=0.2, stone_height_max=0.05, stone_width_range=(0.35, 0.55), stone_distance_range=(0.03, 0.15), platform_width=2.0,
             holes_depth=-2.0, border_width=0.25,
         ),
         "hf_gaps": HfConcentricGapTerrainCfg(
-            proportion=0.1, gap_width_range=(0.05, 0.3), platform_width=2.0, border_width=0.25, gap_depth=-2.0,
+            proportion=0.2, gap_width_range=(0.05, 0.3), platform_width=2.0, border_width=0.25, gap_depth=-2.0,
             ground_width_range=(0.5, 0.5), ground_height_max=0.025,
         ),
     },

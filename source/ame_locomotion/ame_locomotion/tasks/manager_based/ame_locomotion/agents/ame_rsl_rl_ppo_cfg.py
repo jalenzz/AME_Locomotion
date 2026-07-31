@@ -51,7 +51,9 @@ class Go2AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """Standalone AME PPO settings for the 12-DoF Go2 policy."""
 
     num_steps_per_env = 24
-    max_iterations = 10000
+    # The full-resolution encoder is trained with 1024 environments on a
+    # 24 GB GPU, so use a longer run to recover the stage-1 sample budget.
+    max_iterations = 30000
     save_interval = 100
     experiment_name = "go2_ame"
     policy = AMEActorCriticCfg(
