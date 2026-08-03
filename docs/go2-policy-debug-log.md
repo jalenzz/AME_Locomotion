@@ -53,9 +53,9 @@
 - **判断**：高度图能够感知 gap，平台大小和执行器不是当前主因。AME 论文要求 actor/critic 均观测 base linear velocity，但本 run actor 缺失该 3 维输入（actor/critic proprio `45/48`），使瞬时机器人坐标系地图下的停滞、打滑和正常前进部分不可辨。PPO 未启用 symmetry，且 long-air penalty 在总腾空 `1.0 s` 后饱和，允许训练随机固定弃用 RL 或 RR；touchdown 项对已弃用腿没有持续恢复信号。
 - **下一步**：actor 恢复无噪声 `base_lin_vel`，使 stage-1 actor/critic 观测均为 `1296`；启用 Go2 左右镜像 PPO augmentation（地图、向量、关节和动作一致反射）；long-air 免费 swing 仍为 `0.5 s`，但 excess 上限由 `0.5 s` 延长到 `1.5 s`，touchdown 改用 Isaac Lab `compute_first_contact`。编译、镜像 involution/TensorDict 测试和 16 env、1 iteration 冒烟均通过，启动输出确认 symmetry metric、18 个 reward terms 及 actor/critic 48 维 proprio 生效。观测和奖励语义不兼容旧 checkpoint，将从头训练。状态：**已修改/已验证/待训练**。
 
-## 2026-08-03_10-32-17 / iteration_0 — 新配置启动
+## 2026-08-03_10-32-17 / iteration_276 — 新配置正常，但显存余量不足
 
 - **训练**：commit `43b7c1f`，从头启动 `30000` iterations、1024 envs；启用 Go2 左右镜像 augmentation，`num_mini_batches=8` 保持增广后的峰值编码 batch 与旧配置相当。
-- **结果**：iteration 0 完成，完整 iteration 用时约 28.9 s；actor/critic 均为 1296 维，`Mean symmetry loss=0.0014`，未发生 OOM 或启动错误。
-- **判断**：训练进程和新配置均正常；尚无新 checkpoint，不能据此判断 gaps/steppingstones 行为已改善。
-- **下一步**：训练继续运行；出现 `model_2000.pt` 或更早可用 checkpoint 后，按固定 moving/standing 条件复测四脚接触、long-air、平台外进度和 terrain-specific pass/fail。状态：**已修改/已验证/训练中**。
+- **结果**：iteration 0 完成，完整 iteration 用时约 28.9 s；actor/critic 均为 1296 维，`Mean symmetry loss=0.0014`，未发生 OOM。iteration 276 时训练进程占用 `23104 MiB`，整卡已用 `23421 MiB`，仅剩 `654 MiB`。
+- **判断**：训练配置和 symmetry 正常，但 1024 envs 的显存余量不足，不适合继续长期运行；该问题与策略行为无关。
+- **下一步**：将 `run_train.sh` 的环境数从 1024 降到 896，目标训练进程约 20 GB；停止本 run 并从头启动，启动后实测显存。状态：**已修改/待验证**。
