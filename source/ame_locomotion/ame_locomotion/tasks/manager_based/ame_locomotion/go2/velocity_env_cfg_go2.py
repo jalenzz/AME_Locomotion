@@ -127,7 +127,10 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
         # observation terms (order preserved)
-        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.1, n_max=0.1))
+        # AME conditions terrain attention on the complete base twist.  Omitting
+        # linear velocity makes a stopped/slipping robot indistinguishable from
+        # one that is successfully progressing when the map is instantaneous.
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.1, n_max=0.1))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
@@ -356,7 +359,9 @@ class RewardsCfg:
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
             "max_air_time": 0.5,
-            "clip": 0.5,
+            # Preserve ordinary swing phases while distinguishing a one-second
+            # swing from a leg abandoned for several seconds.
+            "max_excess_air_time": 1.5,
         },
     )
     feet_air_time = RewTerm(
@@ -490,6 +495,7 @@ class Go2RoughEnvCfg(ManagerBasedRLEnvCfg):
             self.events.add_base_mass = None
             self.events.base_com = None
             # Observations
+            self.observations.policy.base_lin_vel.noise=None
             self.observations.policy.base_ang_vel.noise=None
             self.observations.policy.projected_gravity.noise=None
             self.observations.policy.velocity_commands.noise=None

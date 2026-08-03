@@ -5,7 +5,14 @@
 
 from isaaclab.utils import configclass
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlPpoAlgorithmCfg,
+    RslRlSymmetryCfg,
+)
+
+from ame_locomotion.tasks.manager_based.ame_locomotion.mdp.symmetry import compute_go2_symmetric_states
 
 
 @configclass
@@ -73,11 +80,18 @@ class Go2AMEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         clip_param=0.2,
         entropy_coef=0.008,
         num_learning_epochs=5,
-        num_mini_batches=4,
+        # Left-right augmentation doubles each mini-batch.  Eight source
+        # mini-batches keep the peak encoded-map batch equal to the previous
+        # four-mini-batch, non-augmented training setup.
+        num_mini_batches=8,
         learning_rate=1.0e-3,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+        symmetry_cfg=RslRlSymmetryCfg(
+            use_data_augmentation=True,
+            data_augmentation_func=compute_go2_symmetric_states,
+        ),
     )

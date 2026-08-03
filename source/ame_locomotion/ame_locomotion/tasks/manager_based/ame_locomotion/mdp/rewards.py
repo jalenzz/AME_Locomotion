@@ -266,7 +266,7 @@ def foot_air_time_penalty(
     env: ManagerBasedRLEnv,
     sensor_cfg: SceneEntityCfg,
     max_air_time: float = 0.5,
-    clip: float = 0.5,
+    max_excess_air_time: float = 1.5,
 ) -> torch.Tensor:
     """Penalize a foot that remains airborne beyond a normal swing duration.
 
@@ -274,11 +274,13 @@ def foot_air_time_penalty(
     leg that never touches down can therefore become a cheap, persistent
     three-leg gait.  This term uses the contact sensor's instantaneous air
     timer and only activates after ``max_air_time``; ordinary swing phases
-    remain free while a permanently unloaded leg incurs a bounded cost.
+    remain free while a permanently unloaded leg incurs a bounded cost.  The
+    cap is deliberately longer than an ordinary swing so the penalty keeps
+    increasing while a policy is abandoning one leg.
     """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     current_air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
-    excess = torch.clamp(current_air_time - max_air_time, min=0.0, max=clip)
+    excess = torch.clamp(current_air_time - max_air_time, min=0.0, max=max_excess_air_time)
     return torch.sum(excess, dim=1)
 
 
@@ -297,8 +299,7 @@ def feet_air_time_reward(
     avoiding a penalty.
     """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    current_contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
-    first_contact = (current_contact_time > 0.0) & (current_contact_time <= env.step_dt + 1.0e-5)
+    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
     last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
     reward = torch.sum(torch.clamp(last_air_time - threshold, min=0.0) * first_contact, dim=1)
     command_norm = torch.linalg.norm(env.command_manager.get_command(command_name), dim=1)
